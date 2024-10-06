@@ -7,3 +7,7 @@ This is a PoC so currently any registry value that matches `HIDDEN_REG` will be 
 ## Usage
 
 Inject into any 64 bit program. To inject into a 32 bit program, compile DLL as 32 bit.
+
+## Demo
+
+https://youtu.be/EFTov_RQ0Ws
