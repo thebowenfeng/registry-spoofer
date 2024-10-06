@@ -8,7 +8,7 @@
 #include <Windows.h>
 #include <string.h>
 
-const WCHAR* HIDDEN_REG[1] = { L"Steam" };
+const WCHAR* HIDDEN_REG[2] = { L"Steam", L"Discord" };
 
 typedef LSTATUS(WINAPI* PREG_ENUM_VALUE_W)(
     HKEY hKey,
@@ -21,7 +21,24 @@ typedef LSTATUS(WINAPI* PREG_ENUM_VALUE_W)(
     LPDWORD lpcbData
     );
 
+typedef struct RegEnumResult {
+    LPWSTR lpValueName;
+    DWORD lpValueNameSize;
+    LPBYTE lpData;
+    DWORD lpDataSize;
+} RegEnumResult;
+
 PREG_ENUM_VALUE_W origRegEnumValueW = NULL;
+
+int contains(LPWSTR lpValueName) {
+    for (int i = 0; i < sizeof(HIDDEN_REG) / sizeof(WCHAR*); i++) {
+        if (wcscmp(lpValueName, HIDDEN_REG[i]) == 0) {
+            printf("%ls hidden\n", lpValueName);
+            return 1;
+        }
+    }
+    return 0;
+}
 
 LSTATUS WINAPI hookRegEnumValueW(
     HKEY hKey,
@@ -33,14 +50,59 @@ LSTATUS WINAPI hookRegEnumValueW(
     LPBYTE lpData,
     LPDWORD lpcbData
 ) {
-    LSTATUS res = origRegEnumValueW(hKey, dwIndex, lpValueName, lpcchValueName, lpReserved, lpType, lpData, lpcbData);
-    for (int i = 0; i < sizeof(HIDDEN_REG) / sizeof(WCHAR*); i++) {
-        if (wcscmp(lpValueName, HIDDEN_REG[i]) == 0) {
-            printf("%ls hidden from registry read\n", lpValueName);
-            return ERROR_FILE_NOT_FOUND;
-        }
+    DWORD index = 0;
+    WCHAR* tempLpValueName = new WCHAR[*lpcchValueName + 1];
+    unsigned long maxBufferSize = *lpcchValueName;
+    DWORD tempLpType;
+    unsigned long defaultBufferSize = 10000;
+    unsigned long maxDataBufferSize = defaultBufferSize;
+    if (lpcbData != NULL) {
+        maxDataBufferSize = *lpcbData;
     }
-    return res;
+    BYTE* tempLpData = NULL;
+    if (lpData != NULL && maxDataBufferSize > 0) {
+        tempLpData = new BYTE[maxDataBufferSize];
+    }
+    LSTATUS tempRes;
+    DWORD filteredResSize = 0;
+
+    do {
+        maxBufferSize = 1024;
+        if (lpcbData != NULL) {
+            maxDataBufferSize = *lpcbData;
+        }
+        else {
+            maxDataBufferSize = 10000;
+        }
+        tempRes = origRegEnumValueW(hKey, index, tempLpValueName, &maxBufferSize, NULL, &tempLpType, tempLpData, &maxDataBufferSize);
+
+        if (!tempRes && !contains(tempLpValueName)) {
+            filteredResSize++;
+        }
+        if (filteredResSize > 0 && filteredResSize - 1 == dwIndex) {
+            memcpy(lpValueName, tempLpValueName, maxBufferSize * sizeof(WCHAR));
+            lpValueName[maxBufferSize] = L'\0';
+            *lpcchValueName = maxBufferSize;
+            if (lpData != NULL && lpcbData != NULL && *lpcbData != 0) {
+                memcpy(lpData, tempLpData, maxDataBufferSize);
+            }
+            if (lpcbData != NULL) {
+                *lpcbData = maxDataBufferSize;
+            }
+            if (lpType != NULL) {
+                *lpType = tempLpType;
+            }
+            delete[] tempLpValueName;
+            delete[] tempLpData;
+            
+            return tempRes;
+        }
+        index++;
+    } while (!tempRes);
+
+    delete[] tempLpValueName;
+    delete[] tempLpData;
+    return tempRes;
 }
 
 WCHAR* CopyModuleName(char* fullModuleName) {
@@ -75,6 +137,7 @@ void InstallRegEnumValueHook() {
             if (strcmp("RegEnumValueW", (char*)(funcName->Name)) == 0) {
                 WCHAR* wModuleName = CopyModuleName((char*)((BYTE*)modInfo.lpBaseOfDll + importDescriptor->Name));
                 origRegEnumValueW = (PREG_ENUM_VALUE_W)GetProcAddress(GetModuleHandle(wModuleName), "RegEnumValueW");
+                delete[] wModuleName;
                 
                 DWORD oldProt;
                 VirtualProtect(&(IATEntry->u1.Function), sizeof(uintptr_t), PAGE_READWRITE, &oldProt);
